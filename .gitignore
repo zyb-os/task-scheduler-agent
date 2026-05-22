@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+.agent_id
+.claude/
+# Runtime SQLite database — never commit
+*.db
+*.db-shm
+*.db-wal
