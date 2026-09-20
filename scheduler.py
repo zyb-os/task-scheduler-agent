@@ -83,6 +83,7 @@ class TaskStore:
         for col, ddl in (
             ("recurrence",  "ALTER TABLE scheduled_tasks ADD COLUMN recurrence TEXT"),
             ("next_run_at", "ALTER TABLE scheduled_tasks ADD COLUMN next_run_at TEXT"),
+            ("timezone",    "ALTER TABLE scheduled_tasks ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'"),
         ):
             if col not in existing_cols:
                 self._conn.execute(ddl)
@@ -106,6 +107,7 @@ class TaskStore:
         target_agent_id: str | None = None,
         timeout_ms: float | None = None,
         recurrence: str | None = None,
+        timezone: str = "UTC",
     ) -> str:
         """Insert a new pending task and return its UUID."""
         task_id = str(uuid.uuid4())
@@ -113,8 +115,8 @@ class TaskStore:
             """
             INSERT INTO scheduled_tasks
                 (id, capability, target_agent_id, input_data, scheduled_at,
-                 timeout_ms, requester_id, status, created_at, recurrence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                 timeout_ms, requester_id, status, created_at, recurrence, timezone)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
             """,
             (
                 task_id,
@@ -126,12 +128,13 @@ class TaskStore:
                 requester_id,
                 _now_iso(),
                 recurrence or None,
+                timezone or "UTC",
             ),
         )
         self._conn.commit()
         logger.info(
-            "Task created: id=%s  capability=%s  scheduled_at=%s  recurrence=%s",
-            task_id, capability, scheduled_at, recurrence or "none",
+            "Task created: id=%s  capability=%s  scheduled_at=%s  recurrence=%s  tz=%s",
+            task_id, capability, scheduled_at, recurrence or "none", timezone,
         )
         return task_id
 
@@ -322,13 +325,14 @@ class TaskStore:
         if not recurrence:
             return None   # not a recurring task
 
+        tz = task.get("timezone") or "UTC"
         now = datetime.now(timezone.utc)
         try:
-            next_dt = next_cron_run(recurrence, now)
+            next_dt = next_cron_run(recurrence, now, tz=tz)
         except Exception as exc:
             logger.error(
                 "recycle_recurring_task: failed to compute next run for task %s "
-                "expression=%r: %s", task_id, recurrence, exc,
+                "expression=%r tz=%s: %s", task_id, recurrence, tz, exc,
             )
             return None
 
@@ -349,6 +353,7 @@ class TaskStore:
             target_agent_id=task.get("target_agent_id"),
             timeout_ms=task.get("timeout_ms"),
             recurrence=recurrence,
+            timezone=tz,
         )
         logger.info(
             "Recurring task recycled: old=%s new=%s next_run=%s cron=%r",

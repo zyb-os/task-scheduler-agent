@@ -222,22 +222,37 @@ class CronExpression:
 
     # ── next_run ──────────────────────────────────────────────────────────
 
-    def next_run(self, after: datetime) -> datetime:
+    def next_run(self, after: datetime, tz: str = "UTC") -> datetime:
         """
         Return the next datetime (UTC, tz-aware) at which this expression fires,
         strictly *after* the given ``after`` timestamp.
 
+        ``tz`` is an IANA timezone name (e.g. "America/Chicago").  The cron
+        fields are evaluated in that local time so that "0 9 * * *" means
+        09:00 in the user's zone, not 09:00 UTC.  The returned datetime is
+        always UTC.
+
         Raises ``RuntimeError`` if no match is found within 4 years (should
         never happen for valid expressions).
         """
-        # Ensure UTC-aware
+        try:
+            from zoneinfo import ZoneInfo
+            local_tz = ZoneInfo(tz) if tz and tz != "UTC" else timezone.utc
+        except Exception:
+            local_tz = timezone.utc
+
+        # Ensure UTC-aware then convert to user's local timezone for evaluation
         if after.tzinfo is None:
             after = after.replace(tzinfo=timezone.utc)
         else:
             after = after.astimezone(timezone.utc)
 
-        # Start from the next whole minute
-        dt = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        # Work in the local timezone so cron fields match wall-clock time
+        after_local = after.astimezone(local_tz)
+
+        # Start from the next whole minute in the local timezone
+        dt = after_local.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        dt = dt.astimezone(local_tz)
 
         # We iterate at most 4 years' worth of minutes
         limit = dt + timedelta(days=4 * 366)
@@ -300,8 +315,8 @@ class CronExpression:
                     dt = dt.replace(minute=next_min)
                 continue
 
-            # ── All fields match ───────────────────────────────────────────
-            return dt
+            # ── All fields match — return as UTC ───────────────────────────
+            return dt.astimezone(timezone.utc)
 
         raise RuntimeError(
             f"next_run: no occurrence found within 4 years for {self._raw!r}"
@@ -341,11 +356,12 @@ class CronExpression:
 
 # ── Public helpers ────────────────────────────────────────────────────────────
 
-def next_cron_run(expr: str, after: datetime) -> datetime:
+def next_cron_run(expr: str, after: datetime, tz: str = "UTC") -> datetime:
     """
     Convenience function: parse *expr* and return the next run datetime after *after*.
+    Cron fields are evaluated in *tz* (IANA name); the result is UTC.
     """
-    return CronExpression.parse(expr).next_run(after)
+    return CronExpression.parse(expr).next_run(after, tz=tz)
 
 
 def validate_cron(expr: str) -> tuple[bool, str]:

@@ -592,6 +592,12 @@ class OrchestratorClient:
             # Fail any pending dispatches targeting this agent
             self._fail_pending_for_agent(agent_id)
 
+        elif mtype == "agent_restart":
+            logger.info("Restart requested by orchestrator — shutting down for restart")
+            asyncio.create_task(self._graceful_shutdown())
+            import sys
+            asyncio.get_event_loop().call_later(1.0, lambda: sys.exit(0))
+
         elif mtype == "error":
             logger.error("Orchestrator error [%s]: %s",
                          payload.get("code"), payload.get("detail"))
@@ -703,6 +709,7 @@ class OrchestratorClient:
         target_agent_id  = input_data.get("target_agent_id") or None
         timeout_ms       = input_data.get("timeout_ms") or None
         recurrence_raw   = (input_data.get("recurrence") or "").strip() or None
+        tz               = (input_data.get("timezone") or "UTC").strip()
 
         if not capability:
             return None, "input_data.capability is required"
@@ -739,16 +746,18 @@ class OrchestratorClient:
             target_agent_id=target_agent_id,
             timeout_ms=timeout_ms,
             recurrence=recurrence_raw,
+            timezone=tz,
         )
         logger.info(
-            "Scheduled task %s for %s (capability=%s recurrence=%s)",
-            task_id, scheduled_at, capability, recurrence_raw or "none",
+            "Scheduled task %s for %s (capability=%s recurrence=%s tz=%s)",
+            task_id, scheduled_at, capability, recurrence_raw or "none", tz,
         )
         return {
             "task_id":      task_id,
             "scheduled_at": scheduled_at,
             "status":       "pending",
             "recurrence":   recurrence_raw,
+            "timezone":     tz,
         }, None
 
     async def _cap_get_task(self, input_data: dict) -> tuple[dict | None, str | None]:
@@ -878,6 +887,7 @@ class OrchestratorClient:
         from cron import CronExpression, validate_cron as _validate_cron
 
         expression = (input_data.get("expression") or "").strip()
+        tz = (input_data.get("timezone") or "UTC").strip()
         if not expression:
             return None, "input_data.expression is required"
 
@@ -885,14 +895,14 @@ class OrchestratorClient:
         if not valid:
             return {"valid": False, "description": desc_or_err, "next_runs": []}, None
 
-        # Compute the next 5 run times for a preview
+        # Compute the next 5 run times in the requested timezone
         try:
             cron_expr = CronExpression.parse(expression)
             now = datetime.now(timezone.utc)
             next_runs: list[str] = []
             cursor = now
             for _ in range(5):
-                cursor = cron_expr.next_run(cursor)
+                cursor = cron_expr.next_run(cursor, tz=tz)
                 next_runs.append(cursor.isoformat(timespec="seconds"))
         except Exception as exc:
             logger.warning("validate_cron: next_run preview failed for %r: %s", expression, exc)
@@ -902,6 +912,7 @@ class OrchestratorClient:
             "valid":       True,
             "description": desc_or_err,
             "next_runs":   next_runs,
+            "timezone":    tz,
         }, None
 
     # ── Background poll loop (dispatch due tasks) ──────────────────────────
